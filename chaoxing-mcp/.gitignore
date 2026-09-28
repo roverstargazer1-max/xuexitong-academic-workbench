@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+cookies.json
+enc_map.json
+courses_index.json
+account.md
+账号信息.md
+workspace/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
+.DS_Store

@@ -1,0 +1,26 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+*.swp
+*~
+.idea/
+.vscode/
+
+# 工作产物与个人数据工作区(不入库)
+.env
+.env.*
+!.env.example
+workspace/
+xuexitong-work/
+cookies.json
+enc_map.json
+courses_index.json
+account.md
+账号信息.md
+*.log
+drafts/
+downloads/
+screenshots/

@@ -1,0 +1,23 @@
+# Personal academic workspace data (never commit)
+workspace/
+xuexitong-work/
+.scratch/
+tmp/
+
+# Credentials & session state (never commit)
+.env
+.env.*
+!.env.example
+cookies.json
+enc_map.json
+courses_index.json
+account.md
+账号信息.md
+
+# Python & OS
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
+.DS_Store

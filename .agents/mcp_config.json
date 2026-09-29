@@ -1,25 +1,22 @@
 {
   "mcpServers": {
     "xt": {
-      "command": "/Users/Stargazer/Code/Project/xuexitong-academic-workbench/chaoxing-mcp/.venv/bin/python",
+      "command": "python",
       "args": [
         "-u",
-        "/Users/Stargazer/Code/Project/xuexitong-academic-workbench/chaoxing-mcp/server.py"
+        "./chaoxing-mcp/server.py"
       ],
       "env": {
-        "XT_ENV_FILE": "/Users/Stargazer/Code/Project/xuexitong-academic-workbench/.env",
-        "XT_WORKSPACE_DIR": "/Users/Stargazer/Code/Project/xuexitong-academic-workbench/workspace"
+        "XT_ENV_FILE": "./.env",
+        "XT_WORKSPACE_DIR": "./workspace"
       }
     },
     "playwright": {
-      "command": "/opt/homebrew/bin/npx",
+      "command": "npx",
       "args": [
         "-y",
         "@playwright/mcp@latest"
-      ],
-      "env": {
-        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-      }
+      ]
     }
   }
 }

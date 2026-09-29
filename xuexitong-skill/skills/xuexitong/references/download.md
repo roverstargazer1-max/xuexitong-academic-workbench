@@ -17,16 +17,20 @@ https://mooc1.chaoxing.com/coursedata/downloadData?dataId=<dataId>&classId=<clas
 ```
 
 - `classId`/`cpi`/`courseId` 可直接从 `workspace/courses_index.json` 读取。
-- **导航即下载**:goto 直链 → 302 到 `d0.cldisk.com/download/<token>?at_=..&ak_=..` → 浏览器下载管理器接管并落盘到 `workspace/semesters/<学期>/<学科>/资料/`。
-- 批量:逐个触发,间隔 ~6 秒;下载完核对文件数与大小(0 字节 = 失败重试)。
-- 环境差异:Playwright MCP / chrome-devtools MCP 用 download 事件接文件并移入 `<学科>/资料/`;IAB 类环境不落盘,把直链给用户或引导其在自己浏览器打开。
+- **强制携带 `Referer: https://mooc1.chaoxing.com/`(防 403 关键!)**:
+  - 超星 CDN(`d0.cldisk.com` 等)严格校验 `Referer`;当从 `mooc1.chaoxing.com` 302 跨域重定向到 `d0.cldisk.com`,或直接用脚本/`curl`/浏览器空白页请求直链时,一旦 `Referer` 被剥离或为空,CDN 会直接返回 **`403 Forbidden`**。
+  - 若使用 Python / `chaoxing-mcp` 下载:直接调用 `server.download_resource(s, url, dest_path)`(已内置逐跳保留 `Referer: https://mooc1.chaoxing.com/`),或在 `requests` 中显式传 `headers={"Referer": "https://mooc1.chaoxing.com/"}`。
+  - 若使用命令行下载:`curl -L -e "https://mooc1.chaoxing.com/" ...` 或 PowerShell `Invoke-WebRequest -Headers @{Referer="https://mooc1.chaoxing.com/"}`。
+- **浏览器导航下载**:在已打开的超星同源页面内触发或携带 Referer goto 直链 → 302 到 `d0.cldisk.com/download/<token>?at_=..&ak_=..` → 浏览器下载管理器接管并落盘到 `workspace/semesters/<学期>/<学科>/资料/`。
+- 批量:逐个触发,间隔 ~6 秒;下载完核对文件数与大小(0 字节或 <1KB 的 403 错误页 = 失败重试)。
+- 环境差异:Playwright MCP / chrome-devtools MCP 用 download 事件接文件并移入 `<学科>/资料/`,或直接复用 `chaoxing-mcp` 会话带 `Referer: https://mooc1.chaoxing.com/` 下载落盘。
 
 ## 章节卡片里的附件
 
 知识点卡片页(`mooc1-1.chaoxing.com/knowledge/cards?...&knowledgeid=...`,见 `tasks.md`)里的 PPT/PDF:
 
 - 卡片 DOM 里通常能找到 `objectid`;
-- 请求 `https://mooc1-1.chaoxing.com/ananas/status/<objectId>?k=&flag=normal` 返回 JSON,`download` 字段是直链(`null` = 教师禁止下载,如实告知,不要绕);
+- 请求 `https://mooc1-1.chaoxing.com/ananas/status/<objectId>?k=&flag=normal` (需带 `Referer: https://mooc1.chaoxing.com/`)返回 JSON,`download` 字段是直链(`null` = 教师禁止下载,如实告知,不要绕);请求该 `download` CDN 直链落盘时同样**必须强制携带 `Referer: https://mooc1.chaoxing.com/`**;
 - 页面上已有下载按钮的直接点按钮最稳。
 
 ## 文本提取(供作业作答引用,统一存入 `<学科>/资料/`)

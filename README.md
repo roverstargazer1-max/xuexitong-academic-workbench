@@ -65,7 +65,8 @@
 
 1. **极速直连层（`chaoxing-mcp`）**：
    - 内置学习通网页端登录逆向逻辑（`AES-CBC` 加密手机号与密码，Key/IV 为 `u2oh6Vu^HWe4_AES`），登录成功后将 Cookie 持久化至 `chaoxing-mcp/cookies.json`，掉线自动静默重登。
-   - 利用每门课固定的防爬签名参数（`stuenc` + `work_enc`，缓存于 `workspace/courses_index.json`），无需启动浏览器即可并发拉取课程与作业列表，并自动在本地生成目录骨架。
+   - **内置 `enc` 自动嗅探**：自动通过 `visit/stucoursemiddle` 提取每门课的防爬签名参数（`stuenc` + `work_enc`，缓存于 `workspace/courses_index.json`，过期自动刷新），完全免去手动浏览器抓包，无需启动浏览器即可并发拉取课程与作业列表并在本地生成目录骨架。
+   - **直链下载强制携带 `Referer`**：默认及跨域名 302 重定向均强制携带 `Referer: https://mooc1.chaoxing.com/`，避免超星 CDN（`d0.cldisk.com`）因跨域剥离 `Referer` 返回 `403 Forbidden`。
 2. **浏览器自动化与技能层（`xuexitong-skill`）**：
    - 针对学习通复杂的**跨域多层 iframe 结构**（如 `#frame_content`、`#frame_content-zy`），提供经过真机校准的导航地图与前端注入脚本（`extract_questions.js`、`fill_answers.js` 等）。
    - 处理必须依赖浏览器的重度交互：解析 `font-cxsecret` 加密字体、多模态识别数学公式图片、按选项字母/文本精准点击（规避平台重做时随机化 `data` 属性）、操作 UEditor 富文本编辑器（`setContent + sync`）、大文件分块注入上传以及点击“暂时保存”。
@@ -170,11 +171,11 @@ chaoxing-mcp/
 
 | MCP 工具名             | 核心功能与作用                                                                                           | 关键参数说明                                                                                               |
 | :----------------------- | :--------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------- |
-| **`xt_homework_all`**  | **秒级扫描本学期未交作业**，并在 `workspace/semesters/` 下自动创建目录骨架与 `作业元信息.json`。         | `include_archived` (默认 `false`，只扫 `active` 与 `long_term` 课程)；`semester` (可选，按学期过滤)        |
-| **`xt_homework`**      | 查询**单门指定课程**的所有作业列表（状态、剩余时间、详情 URL）并建立该课本地作业目录骨架。               | `course`: 课程名称关键词（如 `"数据结构"`）或 `courseId`                                                   |
-| **`xt_courses`**       | 列出当前在修（`active`）与长线（`long_term`）课程，展示所属学期、状态及是否已配置 `[enc]`。              | `include_archived`: 传 `true` 可查看包含已结课归档在内的全部历史课程                                       |
+| **`xt_homework_all`**  | **秒级扫描本学期未交作业**（自动通过 `stucoursemiddle` 嗅探缺失 `enc`），并在 `workspace/semesters/` 下自动创建目录骨架与 `作业元信息.json`。 | `include_archived` (默认 `false`，只扫 `active` 与 `long_term` 课程)；`semester` (可选，按学期过滤)        |
+| **`xt_homework`**      | 查询**单门指定课程**的所有作业列表（状态、剩余时间、详情 URL，缺失 `enc` 自动嗅探）并建立该课本地作业目录骨架。 | `course`: 课程名称关键词（如 `"数据结构"`）或 `courseId`                                                   |
+| **`xt_courses`**       | 列出当前在修（`active`）与长线（`long_term`）课程，自动嗅探并补全缺失的 `[enc]`。                        | `include_archived`: 传 `true` 可查看包含已结课归档在内的全部历史课程                                       |
 | **`xt_course_status`** | 一键修改某门课的生命周期状态（如将已结课的小学期课程归档）或调整所属学期，持久化至`courses_index.json`。 | `course`: 课程名或 ID；`status`: `"active"` / `"long_term"` / `"archived"`；`semester`: 如 `"2026-2027-1"` |
-| **`xt_seed_enc`**      | 为新开课程一次性写入`stuenc` 与 `work_enc` 签名参数（写入后永久可直连扫描）。                            | `course_id`, `stuenc`, `work_enc`                                                                          |
+| **`xt_seed_enc`**      | 自动通过 `stucoursemiddle` 嗅探或手动写入某门课的 `stuenc` 与 `work_enc` 签名参数。                      | `course_id` (必填)；`stuenc`, `work_enc` (可选，不传则自动嗅探)                                            |
 | **`xt_page_text`**     | 携带持久化登录态直接拉取任意学习通 URL 的清洗后纯文本内容。                                              | `url`: 目标页面链接                                                                                        |
 | **`xt_login`**         | 执行 AES-CBC 加密登录并刷新`cookies.json`（其他工具发现会话过期时会自动调用，一般无需手动触发）。        | 无参数（自动从`.env` 读取账号密码）                                                                        |
 
@@ -218,7 +219,7 @@ xuexitong-skill/
 - **[`.env.example`](.env.example) & `.env`**：
   - 存放 `XT_PHONE`（学习通手机号）、`XT_PASSWORD`（学习通密码）和 `XT_WORKSPACE_DIR`（工作区路径，默认 `./workspace`）。
 - **[`.agents/mcp_config.json`](.agents/mcp_config.json)**：
-  - 注册了两个核心 MCP 服务：`xt`（指向 `./chaoxing-mcp/server.py`）和 `playwright`（用于浏览器自动化操作）。
+  - 采用跨平台相对路径注册两个核心 MCP 服务：`xt`（指向 `./chaoxing-mcp/server.py`）和 `playwright`（用于浏览器自动化操作），在 Windows / macOS / Linux 下开箱即用。
 - **[`SPEC.md`](SPEC.md)**：
   - 详细记录了本工作台的产品背景、25 条用户故事（User Stories）、架构决策与离线测试边界，适合开发者或想深入了解系统设计细节的用户阅读。
 
@@ -248,10 +249,10 @@ XT_WORKSPACE_DIR=./workspace
 
 ### 3. 运行离线集成测试套件（验证环境完好）
 
-项目自带不依赖外网和真实密码的毫秒级离线测试套件（覆盖学期自动推算、三态课程过滤、骨架自动生成及零详情页误触红线）：
+项目自带不依赖外网和真实密码的毫秒级离线测试套件（覆盖学期自动推算、三态课程过滤、`stucoursemiddle` 自动嗅探 `enc`、直链下载强制携带 `Referer`、骨架自动生成及零详情页误触红线）：
 
 ```bash
-./chaoxing-mcp/.venv/bin/python -m unittest discover -s chaoxing-mcp -v
+python -m unittest discover -s chaoxing-mcp -v
 ```
 
 看到 `OK` 即表示 MCP 服务端与工作区契约一切正常。
@@ -269,7 +270,7 @@ XT_WORKSPACE_DIR=./workspace
 
 **工作台背后发生的事**：
 
-1. AI 调用 `xt_homework_all()`，读取 `workspace/profile.md` 推算当前学期为 `2026-2027-1`，并只扫描 `workspace/courses_index.json` 中状态为 `active`（本学期在修）和 `long_term`（如形势与政策）的课程，自动跳过 20 多门 `archived` 历史课程。
+1. AI 调用 `xt_homework_all()`，读取 `workspace/profile.md` 推算当前学期为 `2026-2027-1`，并只扫描 `workspace/courses_index.json` 中状态为 `active`（本学期在修）和 `long_term`（如形势与政策）的课程（若遇到新选修课程自动通过 `stucoursemiddle` 嗅探补齐 `stuenc`/`work_enc`），自动跳过 20 多门 `archived` 历史课程。
 2. 返回各科作业列表，同时自动在 `workspace/semesters/2026-2027-1/<学科>/作业/<作业名>/` 下创建好 `信息/` 与 `成果/` 文件夹及 `信息/作业元信息.json`（全程不触碰未开始作业的详情页）。
 3. AI 检查对应学科的 `course_meta.md`，若发现某未交项属于其他小组，会在汇报中贴心标注“非本组（无需提交）”，并把真正需要你处理的待办按剩余时间升序展示。
 
@@ -311,15 +312,15 @@ XT_WORKSPACE_DIR=./workspace
 
 ---
 
-### 案例 4：管理课程状态（归档已结课课程 / 为新开课程补种 `enc`）
+### 案例 4：管理课程状态（归档已结课课程 / 新开课程自动提取 `enc`）
 
 > **场景 A（归档老课）**：某门小学期课程（如《人工智能导论》）老师在平台上一直没点结课，你不想每次查作业都看到它。
 > **你对 AI 说**：“把《人工智能导论》设为归档状态。”
 > **效果**：AI 调用 `xt_course_status(course="人工智能导论", status="archived")`，更新 `workspace/courses_index.json`，从此日常扫描不再受其干扰（需要查历史时说一句“包含归档课程扫一下”即可随时找回）。
 
-> **场景 B（新学期新课补种）**：新学期刚选了一门新课，或者 `xt_courses` 提示某门在修课显示 `[no-enc]`。
-> **你对 AI 说**：“帮我检查一下有没有缺 `enc` 的在修课，有的话用浏览器补种一下。”
-> **效果**：AI 调用 `xt_courses()` 定位缺失签名的课程 → 自动用浏览器登录并点进该课的“作业”标签 → 从 `#frame_content-zy` 的 `src` 中提取 `stuenc` 和 `enc` → 调用 `xt_seed_enc` 写入 `workspace/courses_index.json`。只需一次，后续整个学期该课均可 0.3 秒直连扫描。
+> **场景 B（新学期新课免抓包自动提取 `enc`）**：新学期刚选了一门新课。
+> **你对 AI 说**：“帮我看看这学期有哪些新课和作业。”
+> **效果**：AI 调用 `xt_courses()` 或 `xt_homework_all()` 时，会自动请求新课的 `visit/stucoursemiddle` 页面提取 `#enc`（`stuenc`）和 `#workEnc`（`work_enc`）并写入 `workspace/courses_index.json`，全程无需打开浏览器手动抓包。
 
 ---
 
@@ -330,7 +331,7 @@ XT_WORKSPACE_DIR=./workspace
 
 **工作台背后发生的事**：
 
-1. 即使学习通页面上老师隐藏了课件的“下载”按钮，AI 也会按照 `references/download.md` 通过接口拿到 CDN 直链，将课件下载并提取文本笔记归档至 `workspace/semesters/2026-2027-1/概率论与数理统计A/资料/`。
+1. 即使学习通页面上老师隐藏了课件的“下载”按钮，AI 也会按照 `references/download.md` 通过接口拿到 CDN 直链（自动强制携带 `Referer: https://mooc1.chaoxing.com/` 防 403），将课件下载并提取文本笔记归档至 `workspace/semesters/2026-2027-1/概率论与数理统计A/资料/`。
 2. 同步课程通知至 `workspace/semesters/2026-2027-1/概率论与数理统计A/通知/`。
 3. 之后当你让 AI 做《概率论与数理统计A》的作业时，AI 会直接检索 `资料/` 下的官方课件原话作为答题依据，并在 `答案审核单.md` 中注明“依据第 X 章课件第 Y 页”，大幅提升准确率。
 
@@ -341,7 +342,7 @@ XT_WORKSPACE_DIR=./workspace
 1. **提示 `no account: configure XT_PHONE and XT_PASSWORD`？**
    - 请检查项目根目录下是否已创建 `.env` 文件，且里面的 `XT_PHONE` 和 `XT_PASSWORD` 填写正确。
 2. **某门课在 `xt_homework_all` 中没有被扫描到？**
-   - 对 AI 说：“列出我的所有课程（含归档）”，检查该课在 `workspace/courses_index.json` 中是否被标为了 `archived`，或者是否显示 `[no-enc]`。若是前者，让 AI 改为 `active`；若是后者，让 AI 用浏览器进一次该课作业页补种 `enc`。
+   - 对 AI 说：“列出我的所有课程（含归档）”，检查该课在 `workspace/courses_index.json` 中是否被标为了 `archived`。若是，让 AI 调用 `xt_course_status` 将其改为 `active`；若 `enc` 过期，`xt_homework` 与 `xt_seed_enc(course_id)` 会自动通过 `stucoursemiddle` 重新嗅探刷新。
 3. **作答页遇到乱码文字或空白公式？**
    - 学习通部分题目启用了 `font-cxsecret` 加密字体或将数学公式渲染成了图片。`xuexitong-skill` 的 `extract_questions.js` 会自动检测 `hasSecretFont` 与 `stemImgs`，AI 会自动截图并使用多模态视觉执行“看想分离”读题（先纯转录文字/公式，再答题）。
 4. **想自己修改某道题的答案再提交怎么办？**

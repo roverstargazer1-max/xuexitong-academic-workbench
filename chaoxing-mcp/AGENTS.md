@@ -119,14 +119,12 @@ XT_PASSWORD = "用户密码"
    - ❌ `[ERROR] ... login failed` → 检查账号密码；若提示验证码/双因子，让用户浏览器登录一次学习通再重试
    - ❌ `ModuleNotFoundError` → 依赖装到了别的解释器，回到步骤 3
 
-## 步骤 7：enc 一次性配置（要用"查作业"功能才需要）
+## 步骤 7：验证查作业功能（内置 enc 自动嗅探）
 
-作业列表接口需要每门课一对 `stuenc/enc` 参数（稳定值，配一次永久有效）：
+作业列表接口所需的 `stuenc/work_enc` 参数已由 `chaoxing-mcp` 通过 `visit/stucoursemiddle` 自动嗅探并缓存到 `workspace/courses_index.json`，无需让用户手动打开浏览器抓包：
 
-1. 引导用户：浏览器登录学习通 → 进课程 → 作业标签
-2. 从作业列表页 URL 中找到 `stuenc=...` 和 `enc=...` 两个参数
-3. 调用 `xt_seed_enc(course_id, stuenc, work_enc)` 录入
-4. 用 `xt_homework(course="课程名")` 验证能返回作业列表
+1. 直接调用 `xt_homework_all()` 或 `xt_homework(course="课程名")` 验证能返回作业列表并建立本地骨架
+2. 如需单独刷新某门课的 `enc`，直接调用 `xt_seed_enc(course_id="...")` 即可自动嗅探更新
 
 ## 安全须知（务必遵守）
 

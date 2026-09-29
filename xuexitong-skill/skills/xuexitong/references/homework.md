@@ -17,9 +17,9 @@
 2. **自动生成本地骨架(扫描即建骨架)**:
    - `xt_homework` 与 `xt_homework_all` 会在 `workspace/semesters/<学期>/<学科>/` 下自动创建 `course_meta.md`(若不存在,绝不覆盖已有文件)、`通知/`、`资料/`、`作业/<安全作业名>/{信息, 成果}` 目录,并将列表元数据写入 `信息/作业元信息.json`。
    - **安全边界**:列表扫描阶段**严禁请求** `信息/作业元信息.json` 中的 `detail_url`(`work/task`),防止未开始作业(`answerId=0`)被提前分配答题记录。
-3. **新课缺失 `enc` 时的浏览器一次性补种**:
-   - 调用 `xt_courses()` 检查活跃课程是否全部带有 `[enc]` 标记。
-   - 仅当某门 `active` / `long_term` 课程显示 `[no-enc]` 时,用浏览器进入该课程 → 点"作业"标签 → 读取 `#frame_content-zy` 的 `src` 属性提取 `stuenc` 与 `enc` 参数 → 调用 `xt_seed_enc(course_id, stuenc, work_enc)` 写入 `workspace/courses_index.json`。
+3. **新课 `enc` 自动嗅探与兜底补种**:
+   - `chaoxing-mcp` 在调用 `xt_courses`、`xt_homework`、`xt_homework_all` 或无参 `xt_seed_enc(course_id)` 时,遇到缺失或过期的 `stuenc` / `work_enc` 会自动通过 `visit/stucoursemiddle` 嗅探 `#enc` 与 `#workEnc` 并持久化写入 `workspace/courses_index.json`,无需手动打开浏览器抓包。
+   - 仅当极端情况下自动嗅探未命中时,才用浏览器进入该课程 → 点"作业"标签 → 读取 `#frame_content-zy` 的 `src` 属性提取 `stuenc` 与 `enc` 参数 → 调用 `xt_seed_enc(course_id, stuenc, work_enc)` 写入 `workspace/courses_index.json`。
 4. **结合学科画像过滤非本组作业并输出待办**:
    - 读取对应学科的 `workspace/semesters/<学期>/<学科>/course_meta.md` 中的 `group` 字段(如 `group: "第1~10组"`),若未交作业标题明确属于其他分组(如"第11到21组"),在仪表盘中标为"非本组(无需提交)"而非紧急待办。
    - 汇总输出 markdown:`课程 | 作业 | 截止剩余时间 | 状态 | 本地目录路径`,按剩余时间升序排列,24h 内标 ⚠️。
@@ -38,7 +38,7 @@
    - 从 `信息/作业元信息.json` 读取 `detail_url`(`mooc-ans/mooc2/work/task?...`),在浏览器中打开并记录重定向后的 `work/dowork?...` 完整 URL(供后续二次进页核验草稿使用;若跳 `work/preview` 说明已过期只读,如实告知用户)。
    - 在作答页主文档执行 `scripts/extract_questions.js` 提取 `{count, questions:[{index, typeName, stem, stemImgs, hasSecretFont, options, blanks, richEditors}]}`:
      - 若 `hasSecretFont: true`(含 `font-cxsecret` 加密字体)或含数学公式图片 `stemImgs`,采用**"看想分离"读题法**:先截图或拉取图片交给多模态视觉**只转录文字与 LaTeX 公式**(不推理答案)。
-     - 若题干或题目中包含教师提供的附件模板(如 `.xls`、`.docx`、实验指导书),下载至 `作业/<作业名>/信息/` 目录。
+     - 若题干或题目中包含教师提供的附件模板(如 `.xls`、`.docx`、实验指导书),下载至 `作业/<作业名>/信息/` 目录(若走直链/HTTP 下载,务必强制携带 `Referer: https://mooc1.chaoxing.com/`,防止超星 CDN 跨域剥离 Referer 报 403)。
    - 将整理好的完整题面、选项与公式转录统一写入 `作业/<作业名>/信息/题目原文.md`。
 4. **Step 0.4 零配置遍历读取 `信息/` 下用户补充的所有文件(最高优先级!)**:
    - 列出 `作业/<作业名>/信息/` 目录下的全部文件。

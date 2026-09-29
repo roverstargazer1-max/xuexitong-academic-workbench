@@ -84,15 +84,13 @@ pip install requests pycryptodome
 | `xt_page_text(url)` | 读任意学习通页面的正文（带登录态） | 🟢 只读 |
 | `xt_seed_enc` / `xt_login` | 一次性配置工具（见下） | 🟢 |
 
-## enc 参数：装完只差这一步
+## enc 参数：全自动嗅探，免手动抓包
 
-作业列表接口需要每门课一对 `stuenc/enc` 参数（学习通的防爬设计）。它们不出现在任何页面源码里，但实测**按课程+学生是固定值**，所以只需配置一次、永久有效：
+作业列表接口需要每门课一对 `stuenc/enc` 参数（学习通的防爬设计）。`chaoxing-mcp` 已内置通过 `visit/stucoursemiddle` 自动提取隐藏字段 `#enc`（`stuenc`）与 `#workEnc`（`work_enc`）的逻辑：
 
-1. 浏览器登录学习通，进某门课 → 作业标签
-2. 从作业列表页 URL 里抄下 `stuenc=...` 和 `enc=...`
-3. 对 AI 说："帮我把这门课的 enc 配置一下"（调 `xt_seed_enc`）
-
-之后这门课就永久可查了。`xt_courses` 会标出哪些课已配置。
+1. 调用 `xt_courses`、`xt_homework` 或 `xt_homework_all` 时，自动为缺少签名的课程嗅探并缓存到 `workspace/courses_index.json`
+2. 若签名过期导致列表报错，也会自动重刷 `stucoursemiddle` 更新签名
+3. `xt_seed_enc(course_id)` 可随时手动触发重刷（也兼容手动传入 `stuenc` 和 `work_enc`）
 
 ## 它是怎么工作的
 

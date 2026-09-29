@@ -18,7 +18,7 @@
 | 12 | evaluate 传大文件报 broker mismatch | 传参上限 ~1MB | 分块:`window.__parts=[]` 循环 push → `atob(join)` 组装 |
 | 13 | 连续点选项后面的没反应 | AJAX 频率限制 | 每次点击间隔 ≥1.5 秒 |
 | 14 | 保存时弹确认框卡住 | 平台二次确认 | 确认按钮在 `#popok` 弹层,点它 |
-| 15 | 下载触发后"页面跳走" | 导航即下载(302 到 cldisk CDN) | 正常现象;IAB 类环境不落盘,直链给用户浏览器 |
+| 15 | 下载触发后"页面跳走" / 直链下载报 403 Forbidden | 导航即下载(302 到 cldisk CDN),且超星 CDN 校验 Referer,跨域重定向剥离会报 403 | 强制携带 `Referer: https://mooc1.chaoxing.com/`(chaoxing-mcp 已内置;curl 加 `-e "https://mooc1.chaoxing.com/"`) |
 | 16 | 换浏览器/环境后 cookie 失效 | 会话绑定环境 | `_d + UID + vc3` 三 cookie 复用(用户主动提供才用) |
 | 17 | 登录态误判 | 空间页偶发半加载 | 轮询 2~3 次再判定;以是否重定向到 passport2 为准 |
 | 18 | 登录按钮/协议勾选点不动 | 装饰层遮挡 + 样式化控件 | JS 点 `button#loginBtn`;协议点 `p#passportAgreement` |

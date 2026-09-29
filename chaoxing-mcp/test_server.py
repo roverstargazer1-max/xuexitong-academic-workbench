@@ -35,37 +35,59 @@ SAMPLE_WORK_LIST_DS_HTML = """
 
 
 class FakeResponse:
-    def __init__(self, text="", url="https://i.chaoxing.com/base", json_data=None):
+    def __init__(self, text="", url="https://i.chaoxing.com/base", json_data=None, status_code=200, headers=None, content=b""):
         self.text = text
         self.url = url
         self._json = json_data or {}
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.content = content or (text.encode("utf-8") if isinstance(text, str) else b"")
 
     def json(self):
         return self._json
 
+    def close(self):
+        pass
+
 
 class FakeSession:
-    def __init__(self, course_html=SAMPLE_COURSE_LIST_HTML, work_html_by_course=None):
+    def __init__(self, course_html=SAMPLE_COURSE_LIST_HTML, work_html_by_course=None, middle_html_by_course=None):
         self.course_html = course_html
         self.work_html_by_course = work_html_by_course or {
             "267157766": SAMPLE_WORK_LIST_DS_HTML,
         }
+        self.middle_html_by_course = middle_html_by_course or {}
         self.requested_urls = []
+        self.request_headers = []
         self.cookies = {}
+        self.headers = {}
 
     def get(self, url, **kwargs):
+        hdrs = dict(self.headers)
+        hdrs.update(kwargs.get("headers") or {})
         self.requested_urls.append(("GET", url))
+        self.request_headers.append(("GET", url, hdrs))
         if "work/task" in url:
             raise AssertionError(f"Forbidden request to homework detail URL during scan: {url}")
+        if "stucoursemiddle" in url:
+            for cid, html in self.middle_html_by_course.items():
+                if f"courseid={cid}" in url:
+                    return FakeResponse(text=html, url=f"https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/stu?courseid={cid}")
+            return FakeResponse(text="ok", url=url)
         if "work/list" in url:
             for cid, html in self.work_html_by_course.items():
                 if f"courseId={cid}" in url:
+                    if callable(html):
+                        return html(url, hdrs)
                     return FakeResponse(text=html, url=url)
             return FakeResponse(text="<ul></ul>", url=url)
         return FakeResponse(text="ok", url=url)
 
     def post(self, url, **kwargs):
+        hdrs = dict(self.headers)
+        hdrs.update(kwargs.get("headers") or {})
         self.requested_urls.append(("POST", url))
+        self.request_headers.append(("POST", url, hdrs))
         if "courselistdata" in url:
             return FakeResponse(text=self.course_html, url=url)
         return FakeResponse(text="ok", url=url, json_data={"status": True})
@@ -349,6 +371,115 @@ class TestChaoxingMCPSeam(unittest.TestCase):
                  patch.object(server, "save_cookies"):
                 login_out = self.call_tool("xt_login")
                 self.assertIn("login ok", login_out)
+
+    def test_mcp_config_relative_paths(self):
+        mcp_cfg_path = os.path.join(server.PROJECT_ROOT, ".agents", "mcp_config.json")
+        self.assertTrue(os.path.isfile(mcp_cfg_path))
+        with open(mcp_cfg_path, encoding="utf-8") as f:
+            raw = f.read()
+            cfg = json.loads(raw)
+
+        # Must not contain hardcoded author macOS paths
+        self.assertNotIn("/Users/Stargazer", raw)
+        self.assertNotIn("/opt/homebrew", raw)
+
+        xt_cfg = cfg["mcpServers"]["xt"]
+        self.assertEqual(xt_cfg["command"], "python")
+        self.assertIn("./chaoxing-mcp/server.py", xt_cfg["args"])
+        self.assertEqual(xt_cfg["env"]["XT_ENV_FILE"], "./.env")
+        self.assertEqual(xt_cfg["env"]["XT_WORKSPACE_DIR"], "./workspace")
+
+        # Relative config path resolution falls back to PROJECT_ROOT when cwd is elsewhere
+        resolved = server.resolve_config_path("./chaoxing-mcp/server.py", server.PROJECT_ROOT)
+        self.assertEqual(resolved, os.path.abspath(server.__file__))
+
+    def test_auto_sniff_enc_via_stucoursemiddle_and_refresh_on_expired(self):
+        # Simulate stucoursemiddle returning hidden #enc and #workEnc inputs
+        self.fake_session.middle_html_by_course["267157766"] = """
+        <html><body>
+        <input type="hidden" id="enc" name="enc" value="sniffed_stuenc_999"/>
+        <input type="hidden" id="workEnc" name="workEnc" value="sniffed_workenc_888">
+        </body></html>
+        """
+        self.fake_session.middle_html_by_course["264046870"] = """
+        <html><body>
+        <input type="hidden" id="enc" name="enc" value="ai_stuenc_111"/>
+        <input type="hidden" id="workEnc" name="workEnc" value="ai_workenc_222">
+        </body></html>
+        """
+
+        # Without calling xt_seed_enc, xt_homework should auto-sniff via stucoursemiddle
+        hw_out = self.call_tool("xt_homework", {"course": "数据结构"})
+        self.assertIn("数据结构 — 2 homework:", hw_out)
+        self.assertIn("[未交] 复习3-模板", hw_out)
+
+        # Verify sniffed enc values and teacher were persisted in courses_index.json
+        index_path = os.path.join(self.workspace_dir, "courses_index.json")
+        with open(index_path, encoding="utf-8") as f:
+            saved_idx = json.load(f)
+        self.assertEqual(saved_idx["267157766"]["stuenc"], "sniffed_stuenc_999")
+        self.assertEqual(saved_idx["267157766"]["work_enc"], "sniffed_workenc_888")
+        self.assertEqual(saved_idx["267157766"]["teacher"], "蒋莉")
+
+        # Simulate expired enc on work/list returning "无权限的操作！", triggering auto-refresh
+        saved_idx["267157766"]["stuenc"] = "expired_stuenc"
+        with open(index_path, "w", encoding="utf-8") as f:
+            json.dump(saved_idx, f, ensure_ascii=False)
+
+        def work_list_handler(url, _hdrs):
+            if "stuenc=expired_stuenc" in url:
+                return FakeResponse(text="无权限的操作！", url=url)
+            if "stuenc=sniffed_stuenc_999" in url:
+                return FakeResponse(text=SAMPLE_WORK_LIST_DS_HTML, url=url)
+            return FakeResponse(text="<ul></ul>", url=url)
+
+        self.fake_session.work_html_by_course["267157766"] = work_list_handler
+        hw_retry_out = self.call_tool("xt_homework", {"course": "数据结构"})
+        self.assertIn("数据结构 — 2 homework:", hw_retry_out)
+        with open(index_path, encoding="utf-8") as f:
+            refreshed_idx = json.load(f)
+        self.assertEqual(refreshed_idx["267157766"]["stuenc"], "sniffed_stuenc_999")
+
+    def test_forced_referer_on_session_and_cdn_redirect(self):
+        with patch.object(server.os.path, "exists", return_value=False):
+            real_s = server.new_session()
+        self.assertEqual(real_s.headers.get("Referer"), "https://mooc1.chaoxing.com/")
+
+        # Simulate Chaoxing downloadData 302 -> d0.cldisk.com CDN that returns 403 without Referer
+        cdn_url = "https://d0.cldisk.com/download/token123"
+        dl_url = "https://mooc1.chaoxing.com/coursedata/downloadData?dataId=1001"
+
+        class RedirectMockSession:
+            def __init__(self):
+                self.headers = {}
+                self.calls = []
+
+            def get(self, url, **kwargs):
+                hdrs = dict(self.headers)
+                hdrs.update(kwargs.get("headers") or {})
+                self.calls.append((url, hdrs))
+                if url == dl_url:
+                    return FakeResponse(
+                        text="",
+                        url=dl_url,
+                        status_code=302,
+                        headers={"Location": cdn_url},
+                    )
+                if url == cdn_url:
+                    if hdrs.get("Referer") != "https://mooc1.chaoxing.com/":
+                        return FakeResponse(text="Forbidden", url=cdn_url, status_code=403)
+                    return FakeResponse(text="PDF_BINARY_CONTENT", url=cdn_url, status_code=200, content=b"%PDF-1.5")
+                return FakeResponse(text="not found", url=url, status_code=404)
+
+        mock_s = RedirectMockSession()
+        dest_file = os.path.join(self.workspace_dir, "courseware.pdf")
+        resp = server.download_resource(mock_s, dl_url, dest_file)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(os.path.isfile(dest_file))
+        with open(dest_file, "rb") as f:
+            self.assertEqual(f.read(), b"%PDF-1.5")
+        for _, hdrs in mock_s.calls:
+            self.assertEqual(hdrs.get("Referer"), "https://mooc1.chaoxing.com/")
 
 
 if __name__ == "__main__":

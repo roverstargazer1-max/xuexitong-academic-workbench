@@ -70,7 +70,7 @@ workspace/
 
 ## 作业主流程速览(详情以 references/homework.md 为准)
 
-1. **秒级仪表盘与建骨架**:优先调用 MCP `xt_homework_all` 扫描本学期 `active + long_term` 课程,自动生成 `workspace/semesters/<学期>/<学科>/作业/<作业名>/{信息, 成果}` 骨架与 `信息/作业元信息.json`;仅当 `xt_courses` 提示某门活跃新课缺少 `enc` 时,才用浏览器进该课"作业"标签抓取 `stuenc`/`enc` 并调 `xt_seed_enc` 补种。
+1. **秒级仪表盘与建骨架**:优先调用 MCP `xt_homework_all` 扫描本学期 `active + long_term` 课程,自动通过 `stucoursemiddle` 嗅探缺失的 `stuenc`/`work_enc` 并生成 `workspace/semesters/<学期>/<学科>/作业/<作业名>/{信息, 成果}` 骨架与 `信息/作业元信息.json`(无需手动浏览器抓包 `enc`;仅当极端情况自动嗅探失败时才用浏览器补种)。
 2. **强制前置 Step 0(加载双层画像与聚合 `信息/`)**:
    - 读取 `workspace/profile.md` 与 `<学科>/course_meta.md`,核对所在分组(`group`,自动跳过非本组作业)、附件命名规范(`naming_rule`)与开发环境偏好;
    - 语义检索 `<学科>/通知/` 中与本作业相关的通知要求,写入 `<作业名>/信息/关联通知.md`;

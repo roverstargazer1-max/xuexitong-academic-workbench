@@ -6,17 +6,16 @@ Tools:
   xt_course_status(...)      update a course's status (active/long_term/archived) or semester
   xt_homework(course)        homework list for one course + materialize workspace skeleton
   xt_homework_all()          scan active + long_term courses + materialize workspace skeleton
-  xt_seed_enc(course_id, stuenc, work_enc)  add a course's enc pair (one-time,
-                             captured from a browser session; values are stable)
+  xt_seed_enc(course_id, stuenc, work_enc)  sniff or manually set a course's enc pair
   xt_page_text(url)          fetch any chaoxing page as cleaned text
 
 Login (reverse-engineered from passport2 login.js, 2026-09):
   POST https://passport2.chaoxing.com/fanyalogin with AES-CBC(phone) and
   AES-CBC(password); key = iv = "u2oh6Vu^HWe4_AES", PKCS7, Base64 out.
 
-The homework list endpoint requires per-course `stuenc` + `enc` query params.
-These are stable per (course, clazz, student) and stored alongside course lifecycle
-metadata in `workspace/courses_index.json` (with fallback read from `enc_map.json`).
+The homework list endpoint requires per-course `stuenc` + `enc` (`workEnc`) query params.
+These are automatically sniffed via `visit/stucoursemiddle` (`#enc` and `#workEnc` hidden
+inputs) and cached alongside course lifecycle metadata in `workspace/courses_index.json`.
 
 Account source (first match wins):
   1. Process env vars `XT_PHONE` and `XT_PASSWORD`
@@ -44,6 +43,7 @@ ENC_FILE = os.path.join(HERE, "enc_map.json")
 KEY = b"u2oh6Vu^HWe4_AES"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126 Safari/537.36")
+DEFAULT_REFERER = "https://mooc1.chaoxing.com/"
 
 
 def parse_dotenv_file(path: str) -> dict[str, str]:
@@ -71,10 +71,19 @@ def parse_dotenv_file(path: str) -> dict[str, str]:
     return out
 
 
+def resolve_config_path(raw_path: str, base_dir: str = PROJECT_ROOT) -> str:
+    if os.path.isabs(raw_path):
+        return os.path.abspath(raw_path)
+    cwd_candidate = os.path.abspath(raw_path)
+    if os.path.exists(cwd_candidate):
+        return cwd_candidate
+    return os.path.abspath(os.path.join(base_dir, raw_path))
+
+
 def load_dotenv_dict(env_file: str | None = None) -> tuple[dict[str, str], str | None]:
     explicit = env_file or os.environ.get("XT_ENV_FILE")
     if explicit:
-        p = os.path.abspath(explicit)
+        p = resolve_config_path(explicit, PROJECT_ROOT)
         return parse_dotenv_file(p), (p if os.path.exists(p) else None)
     for candidate in (os.path.join(PROJECT_ROOT, ".env"), os.path.join(HERE, ".env")):
         if os.path.exists(candidate):
@@ -85,7 +94,7 @@ def load_dotenv_dict(env_file: str | None = None) -> tuple[dict[str, str], str |
 def get_workspace_dir(workspace_dir: str | None = None) -> str:
     ws = workspace_dir or os.environ.get("XT_WORKSPACE_DIR")
     if ws:
-        return os.path.abspath(ws)
+        return resolve_config_path(ws, PROJECT_ROOT)
     dotenv, dotenv_path = load_dotenv_dict()
     dotenv_ws = dotenv.get("XT_WORKSPACE_DIR")
     if dotenv_ws:
@@ -135,7 +144,7 @@ _session = None
 def new_session():
     s = requests.Session()
     s.trust_env = False  # chaoxing is domestic; a dead local proxy must not interfere
-    s.headers.update({"User-Agent": UA})
+    s.headers.update({"User-Agent": UA, "Referer": DEFAULT_REFERER})
     if os.path.exists(COOKIE_FILE):
         try:
             jar = json.load(open(COOKIE_FILE, encoding="utf-8"))
@@ -155,15 +164,63 @@ def save_cookies(s):
 
 
 def robust(s, method, url, tries=4, **kw):
-    """mooc1-1.chaoxing.com often RSTs the first connection; retry wins."""
+    """mooc1-1.chaoxing.com often RSTs the first connection; retry wins.
+    Also enforces Referer: https://mooc1.chaoxing.com/ so Chaoxing CDN
+    (e.g. d0.cldisk.com) never returns 403 due to missing/stripped Referer.
+    """
+    headers = dict(kw.get("headers") or {})
+    if not headers.get("Referer"):
+        headers["Referer"] = DEFAULT_REFERER
+    if hasattr(s, "headers") and isinstance(getattr(s, "headers", None), dict):
+        s.headers.setdefault("Referer", DEFAULT_REFERER)
+    kw["headers"] = headers
+
     last = None
     for i in range(tries):
         try:
-            return getattr(s, method)(url, timeout=30, **kw)
+            r = getattr(s, method)(url, timeout=30, **kw)
+            if getattr(r, "status_code", 200) == 403 and getattr(r, "url", "") and r.url != url:
+                # Cross-origin / scheme-downgrade redirect may strip Referer; re-request final URL with Referer forced
+                r = getattr(s, method)(r.url, timeout=30, **kw)
+            return r
         except Exception as e:
             last = e
             time.sleep(1.2 * (i + 1))
     raise last
+
+
+def download_resource(s, url: str, dest_path: str | None = None):
+    """Download a Chaoxing direct link (e.g. coursedata/downloadData -> d0.cldisk.com)
+    while explicitly preserving Referer: https://mooc1.chaoxing.com/ across cross-domain 302 hops.
+    """
+    headers = {"User-Agent": UA, "Referer": DEFAULT_REFERER}
+    cur_url = url
+    resp = None
+    for _ in range(6):
+        resp = robust(s, "get", cur_url, headers=headers, allow_redirects=False, stream=bool(dest_path))
+        status = getattr(resp, "status_code", 200)
+        loc = getattr(resp, "headers", {}).get("Location") if hasattr(resp, "headers") else None
+        if status in (301, 302, 303, 307, 308) and loc:
+            if hasattr(resp, "close"):
+                resp.close()
+            cur_url = loc
+            continue
+        break
+    if dest_path and resp is not None:
+        os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+        with open(dest_path, "wb") as f:
+            if hasattr(resp, "iter_content"):
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+            else:
+                content = getattr(resp, "content", b"")
+                if isinstance(content, str):
+                    content = content.encode("utf-8")
+                f.write(content)
+        if hasattr(resp, "close"):
+            resp.close()
+    return resp
 
 
 def logged_in(s) -> bool:
@@ -273,6 +330,72 @@ def has_valid_enc(entry: dict | None) -> bool:
     return bool(entry and entry.get("stuenc") and entry.get("work_enc"))
 
 
+def parse_enc_from_middle_html(html: str, final_url: str = "") -> tuple[str, str]:
+    """Extract (stuenc, work_enc) from stucoursemiddle / mycourse/stu HTML."""
+    def _find_input(field_name: str) -> str:
+        for pat in (
+            rf'<input[^>]*\b(?:id|name)=["\']{field_name}["\'][^>]*\bvalue=["\']([^"\']+)["\']',
+            rf'<input[^>]*\bvalue=["\']([^"\']+)["\'][^>]*\b(?:id|name)=["\']{field_name}["\']',
+        ):
+            m = re.search(pat, html or "", re.I)
+            if m and m.group(1).strip():
+                return m.group(1).strip()
+        return ""
+
+    stuenc = _find_input("enc")
+    if not stuenc and final_url:
+        m_url = re.search(r"[?&](?:stuenc|enc)=([0-9a-fA-F]{16,64})", final_url)
+        if m_url:
+            stuenc = m_url.group(1).strip()
+    work_enc = _find_input("workEnc")
+    if not work_enc:
+        m_work = re.search(r'workEnc["\']?\s*[:=]\s*["\']([0-9a-fA-F]{16,64})["\']', html or "", re.I)
+        if m_work:
+            work_enc = m_work.group(1).strip()
+    return stuenc, work_enc
+
+
+def sniff_course_enc(s, course_id: str, clazz_id: str, cpi: str) -> tuple[str, str]:
+    """Automatically fetch stuenc and work_enc via stucoursemiddle without a browser."""
+    if not course_id or not clazz_id:
+        return "", ""
+    url = (
+        "https://mooc1-1.chaoxing.com/mooc-ans/visit/stucoursemiddle"
+        f"?courseid={course_id}&clazzid={clazz_id}&vc=1&cpi={cpi}&ismooc2=1&v=2"
+    )
+    try:
+        r = robust(s, "get", url)
+        return parse_enc_from_middle_html(getattr(r, "text", ""), str(getattr(r, "url", "")))
+    except Exception:
+        return "", ""
+
+
+def ensure_course_enc(
+    s,
+    entry: dict | None,
+    idx: dict | None = None,
+    workspace_dir: str | None = None,
+    force: bool = False,
+) -> bool:
+    """Ensure entry has valid stuenc & work_enc; auto-sniff via stucoursemiddle if missing."""
+    if not entry:
+        return False
+    if not force and has_valid_enc(entry):
+        return True
+    cid = str(entry.get("courseId", ""))
+    clazz_id = str(entry.get("clazzId", ""))
+    cpi = str(entry.get("cpi", ""))
+    stuenc, work_enc = sniff_course_enc(s, cid, clazz_id, cpi)
+    if stuenc and work_enc:
+        entry["stuenc"] = stuenc
+        entry["work_enc"] = work_enc
+        entry["updated"] = get_today_str()
+        if idx is not None:
+            save_enc_map(idx, workspace_dir)
+        return True
+    return has_valid_enc(entry)
+
+
 def sync_courses_index(remote_courses: list[dict], workspace_dir: str | None = None):
     idx = load_enc_map(workspace_dir)
     cur_sem = resolve_current_semester(workspace_dir)
@@ -296,7 +419,7 @@ def sync_courses_index(remote_courses: list[dict], workspace_dir: str | None = N
             changed = True
         else:
             entry = idx[cid]
-            for k in ("courseId", "clazzId", "cpi", "name"):
+            for k in ("courseId", "clazzId", "cpi", "name", "teacher"):
                 if c.get(k) and (not entry.get(k) or entry.get(k) == "?"):
                     entry[k] = c[k]
                     changed = True
@@ -327,10 +450,17 @@ def list_courses(s):
         clz = re.search(r'clazzId="(\d+)"', chunk)
         pid = re.search(r'personId="(\d+)"', chunk)
         name = re.search(r'title="([^"]{2,60})"', chunk)
+        teacher = ""
+        for pm in re.finditer(r'<p[^>]*>(.*?)</p>', chunk, re.S):
+            ptxt = re.sub(r"<[^>]+>", "", pm.group(1)).strip()
+            if ptxt and not ptxt.startswith("开课时间"):
+                teacher = ptxt
+                break
         if cid and clz:
             out.append({"courseId": cid.group(1), "clazzId": clz.group(1),
                         "cpi": pid.group(1) if pid else "",
-                        "name": (name.group(1) if name else "?").strip()})
+                        "name": (name.group(1) if name else "?").strip(),
+                        "teacher": teacher})
     return out
 
 
@@ -381,15 +511,21 @@ def tool_courses(args):
     visible = []
     archived_count = 0
     missing_enc = []
+    enc_updated = False
     for cid, entry in idx.items():
         st = entry.get("status", "active")
         if st == "archived":
             archived_count += 1
             if not include_archived:
                 continue
+        if not has_valid_enc(entry):
+            if ensure_course_enc(s, entry):
+                enc_updated = True
         visible.append(entry)
         if st in ("active", "long_term") and not has_valid_enc(entry):
             missing_enc.append(entry.get("name", cid))
+    if enc_updated:
+        save_enc_map(idx)
 
     lines = [f"当前学期: {cur_sem} | 展示 {len(visible)} 门课程:"]
     for c in visible:
@@ -403,7 +539,7 @@ def tool_courses(args):
     if not include_archived and archived_count > 0:
         lines.append(f"（已折叠 {archived_count} 门 archived 归档课程，传 include_archived=true 查看全部）")
     if missing_enc:
-        lines.append(f"提示：发现缺少 enc 的活跃课程（{', '.join(missing_enc)}），请在浏览器打开作业页提取 stuenc/enc 后调用 xt_seed_enc。")
+        lines.append(f"提示：发现未能自动提取 enc 的活跃课程（{', '.join(missing_enc)}），可调用 xt_seed_enc 手动补充。")
     return [{"type": "text", "text": "\n".join(lines)}]
 
 
@@ -466,6 +602,24 @@ def materialize_course_skeleton(entry: dict, items: list[dict], workspace_dir: s
     return course_dir
 
 
+def fetch_course_work_list(s, cid: str, clazz_id: str, cpi: str, entry: dict, idx: dict):
+    """Fetch work/list for a course; auto-refresh enc via stucoursemiddle if expired/invalid."""
+    url = (
+        "https://mooc1.chaoxing.com/mooc2/work/list"
+        f"?courseId={cid}&classId={clazz_id}&cpi={cpi}&ut=s"
+        f"&stuenc={entry['stuenc']}&enc={entry['work_enc']}"
+    )
+    r = robust(s, "get", url)
+    if ("无权限" in r.text or "参数错误" in r.text) and ensure_course_enc(s, entry, idx, force=True):
+        url = (
+            "https://mooc1.chaoxing.com/mooc2/work/list"
+            f"?courseId={cid}&classId={clazz_id}&cpi={cpi}&ut=s"
+            f"&stuenc={entry['stuenc']}&enc={entry['work_enc']}"
+        )
+        r = robust(s, "get", url)
+    return r
+
+
 def tool_homework(args):
     s = ensure_session()
     query = str(args.get("course", "")).strip()
@@ -486,16 +640,15 @@ def tool_homework(args):
     cid = str(target["courseId"])
     e = idx.get(cid)
     if not has_valid_enc(e):
+        ensure_course_enc(s, e, idx)
+    if not has_valid_enc(e):
         return [{"type": "text", "text":
-                 f"no cached enc for courseId {cid} ({target.get('name', '?')}). "
-                 "One-time setup: open the course 作业 tab in a browser, copy the "
+                 f"no cached enc for courseId {cid} ({target.get('name', '?')}) and auto-sniff via stucoursemiddle failed. "
+                 "Fallback: open the course 作业 tab in a browser, copy the "
                  "work/list URL's stuenc & enc params, then call xt_seed_enc."}]
     clazz_id = target.get("clazzId") or e.get("clazzId", "")
     cpi = target.get("cpi") or e.get("cpi", "")
-    r = robust(s, "get",
-               "https://mooc1.chaoxing.com/mooc2/work/list"
-               f"?courseId={cid}&classId={clazz_id}&cpi={cpi}&ut=s"
-               f"&stuenc={e['stuenc']}&enc={e['work_enc']}")
+    r = fetch_course_work_list(s, cid, clazz_id, cpi, e, idx)
     items = parse_work_list(r.text)
     materialize_course_skeleton(e, items)
     lines = [f"{e.get('name', target.get('name', '?'))} — {len(items)} homework:"]
@@ -524,12 +677,18 @@ def tool_homework_all(args):
         if sem_filter and e.get("semester") != sem_filter:
             continue
         if not has_valid_enc(e):
+            ensure_course_enc(s, e, idx)
+        if not has_valid_enc(e):
             continue
         try:
-            r = robust(s, "get",
-                       "https://mooc1.chaoxing.com/mooc2/work/list"
-                       f"?courseId={e.get('courseId', cid)}&classId={e.get('clazzId', '')}&cpi={e.get('cpi', '')}&ut=s"
-                       f"&stuenc={e['stuenc']}&enc={e['work_enc']}")
+            r = fetch_course_work_list(
+                s,
+                str(e.get("courseId", cid)),
+                str(e.get("clazzId", "")),
+                str(e.get("cpi", "")),
+                e,
+                idx,
+            )
             items = parse_work_list(r.text)
             materialize_course_skeleton(e, items)
             for it in items:
@@ -547,17 +706,30 @@ def tool_homework_all(args):
 
 def tool_seed_enc(args):
     enc = load_enc_map()
-    cid = str(args.get("course_id", ""))
+    cid = str(args.get("course_id", "")).strip()
+    stuenc = str(args.get("stuenc", "") or "").strip()
+    work_enc = str(args.get("work_enc", "") or "").strip()
     entry = enc.get(cid, {})
     entry.setdefault("courseId", cid)
     entry.setdefault("semester", resolve_current_semester())
     entry.setdefault("status", "active")
-    entry["stuenc"] = args.get("stuenc", "")
-    entry["work_enc"] = args.get("work_enc", "")
-    entry["updated"] = get_today_str()
+    if stuenc and work_enc:
+        entry["stuenc"] = stuenc
+        entry["work_enc"] = work_enc
+        entry["updated"] = get_today_str()
+        enc[cid] = entry
+        save_enc_map(enc)
+        return [{"type": "text", "text": f"enc cached for courseId {cid}"}]
+
+    # Auto-sniff via stucoursemiddle when stuenc/work_enc are not manually provided
+    s = ensure_session()
+    if not entry.get("clazzId"):
+        enc, _ = sync_courses_index(list_courses(s))
+        entry = enc.get(cid, entry)
     enc[cid] = entry
-    save_enc_map(enc)
-    return [{"type": "text", "text": f"enc cached for courseId {cid}"}]
+    if ensure_course_enc(s, entry, enc, force=True):
+        return [{"type": "text", "text": f"enc auto-sniffed and cached for courseId {cid}"}]
+    return [{"type": "text", "text": f"failed to auto-sniff enc for courseId {cid}"}]
 
 
 def tool_course_status(args):
@@ -620,7 +792,7 @@ TOOLS = {
     "xt_courses": {
         "description": "List enrolled courses filtered by status (default: active + long_term, "
                        "summarizing archived count; pass include_archived=true for all). "
-                       "Shows semester, status, and whether enc is configured.",
+                       "Auto-sniffs missing stuenc/work_enc via stucoursemiddle and shows status.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -644,6 +816,7 @@ TOOLS = {
     "xt_homework": {
         "description": "List homework entries (title/status/remaining time/detail URL) "
                        "for one course and materialize local workspace skeleton. "
+                       "Auto-sniffs stuenc/work_enc via stucoursemiddle if not yet cached. "
                        "Arg: course = course name substring or courseId.",
         "inputSchema": {"type": "object",
                         "properties": {"course": {"type": "string"}},
@@ -651,8 +824,9 @@ TOOLS = {
     },
     "xt_homework_all": {
         "description": "Scan homework across active and long_term courses (or all if "
-                       "include_archived=true), materialize local workspace skeleton, "
-                       "and highlight 未交 (unsubmitted) items.",
+                       "include_archived=true), auto-sniffing missing stuenc/work_enc via "
+                       "stucoursemiddle, materializing local workspace skeleton, "
+                       "and highlighting 未交 (unsubmitted) items.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -662,13 +836,12 @@ TOOLS = {
         },
     },
     "xt_seed_enc": {
-        "description": "Cache a course's stuenc/work_enc pair (stable per course+student). "
-                       "Get the values once from a browser: open the course 作业 tab, copy "
-                       "them from the work/list URL query string.",
+        "description": "Cache or refresh a course's stuenc/work_enc pair. "
+                       "If stuenc and work_enc are omitted, automatically sniffs them via stucoursemiddle.",
         "inputSchema": {"type": "object", "properties": {
             "course_id": {"type": "string"}, "stuenc": {"type": "string"},
             "work_enc": {"type": "string"}},
-            "required": ["course_id", "stuenc", "work_enc"]},
+            "required": ["course_id"]},
     },
     "xt_page_text": {
         "description": "Fetch any chaoxing URL with the logged-in session and return "

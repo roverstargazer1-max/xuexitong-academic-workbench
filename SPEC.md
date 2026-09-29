@@ -146,13 +146,13 @@
   1. `active`：当前学期在修课程（如 2026-2027-1 的《数据结构》《概率论与数理统计A》《嵌入式系统》《面向软件技术的离散数学》《体育》《毛概》《马原》《用Javascript程序设计网页和服务程序》）。
   2. `long_term`：跨学期持续有效课程（如《形势与政策2025》《计算机学院25新生晚自习》）。
   3. `archived`：已结课或上一学期课程（含官方已标“课程已结束”的 5 门课，以及 2025-2026 学年春夏/秋冬课程和 2026-05 开课的《人工智能导论》）。
-- **新课自动推断初筛规则**：当远端课程列表出现尚未记录在 `courses_index.json` 中的新 `courseId` 时，默认将其归入当前计算出的学期并标为 `status: "active"`，提醒存在缺少 `enc` 的新课需补种。
+- **新课自动推断与 `enc` 自动嗅探规则**：当远端课程列表出现尚未记录在 `courses_index.json` 中的新 `courseId` 时，默认将其归入当前计算出的学期并标为 `status: "active"`，并通过 `visit/stucoursemiddle` 自动提取 `#enc`（`stuenc`）与 `#workEnc`（`work_enc`）落盘，免去手动浏览器抓包。
 
 ### 4. MCP 服务接口扩展与“扫描即建骨架”契约
 - **`xt_courses` 升级**：
-  - 支持按 `status` 过滤（默认展示 `active` 与 `long_term` 课程并汇总 `archived` 数量，传 `include_archived=true` 时列出全部），显示每门课的学期、状态及是否已配置 `enc`。
+  - 支持按 `status` 过滤（默认展示 `active` 与 `long_term` 课程并汇总 `archived` 数量，传 `include_archived=true` 时列出全部），自动嗅探补全缺失的 `enc` 并显示每门课的学期、状态及 `enc` 状态。
 - **`xt_homework` 与 `xt_homework_all` 升级**：
-  - `xt_homework_all` 默认仅扫描 `status` 为 `active` 或 `long_term`（且具备 `enc`）的课程；支持可选参数 `include_archived: bool = False` 与 `semester: str` 过滤。
+  - `xt_homework_all` 默认仅扫描 `status` 为 `active` 或 `long_term` 的课程（缺失或过期 `enc` 自动通过 `stucoursemiddle` 嗅探刷新）；支持可选参数 `include_archived: bool = False` 与 `semester: str` 过滤。
   - **骨架自动生成（Skeleton Materialization）**：在 `xt_homework` 和 `xt_homework_all` 解析出某门课的作业列表后，自动在 `workspace/semesters/<semester>/<course_name>/作业/<safe_homework_title>/` 下创建 `信息/` 和 `成果/` 目录（若不存在），并将列表级元数据（`workId`, `answerId`, `title`, `status`, `remaining`, `detail_url`, `last_seen`）写入 `信息/作业元信息.json`。
   - **安全边界**：列表扫描阶段**绝不请求** `detail_url`（避免触发 `answerId=0` 的作业分配答题记录）。
 - **新增课程状态与画像管理辅助工具（或参数）**：
@@ -161,7 +161,7 @@
 ### 5. Skill 工作流改造与“信息 → 成果”协同协议
 - 更新 Skill 主指令与参考文档（`SKILL.md`、`homework.md`、`download.md`、`info.md`）：
   1. **废弃 `./xuexitong-work` 扁平目录**，全面切换至 `workspace/semesters/<学期>/<学科>/` 体系。
-  2. **作业仪表盘流程**：优先调用 MCP `xt_homework_all` 秒级获取本学期（`active + long_term`）未交作业并自动生成本地目录骨架；仅当发现新课缺失 `enc` 时才动用浏览器进入该课程的“作业”标签提取 `stuenc/work_enc` 并调用 `xt_seed_enc`。
+  2. **作业仪表盘流程**：优先调用 MCP `xt_homework_all` 秒级获取本学期（`active + long_term`）未交作业，自动通过 `stucoursemiddle` 嗅探缺失的 `stuenc/work_enc` 并自动生成本地目录骨架；同时直链下载强制携带 `Referer: https://mooc1.chaoxing.com/` 防 CDN 403。
   3. **作答前强制 Step 0（加载画像与聚合 `信息/`）**：
      - 读取 `workspace/profile.md` 与当前学科的 `course_meta.md`（核对分组号、命名规范、环境要求）。
      - 检查 `<学科>/通知/`，将与当前作业语义相关的通知要求摘录至 `<作业名>/信息/关联通知.md`。
